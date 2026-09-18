@@ -1,77 +1,171 @@
 import cv2
-from src.detector import AerialDetector
+import torch
+from ultralytics import YOLO
+from src.tracker import VehicleTracker
 
-WINDOW_W = 1280
-WINDOW_H = 720
+# ==========================================================
+# ORBITAL ARES V2
+# GPU + YOLO11 + ByteTrack + Full Resolution Video
+# ==========================================================
 
-def resize_keep_ratio(frame, max_w, max_h):
-    h, w = frame.shape[:2]
-    scale = min(max_w / w, max_h / h)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-    return cv2.resize(frame, (new_w, new_h))
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Running on: {DEVICE}")
 
-def main():
+# Load model
+model = YOLO("models/yolo11s.pt")
+model.to(DEVICE)
 
-    detector = AerialDetector()
+tracker = VehicleTracker()
 
-    cap = cv2.VideoCapture("input/demo.mp4")
+# COCO vehicle classes
+VEHICLE_CLASSES = [2, 3, 5, 7]
 
-    if not cap.isOpened():
-        print("Cannot open video")
-        return
+CLASS_NAMES = {
+    2: "CAR",
+    3: "BIKE",
+    5: "BUS",
+    7: "TRUCK"
+}
 
-    cv2.namedWindow("ORBITAL ARES", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("ORBITAL ARES", WINDOW_W, WINDOW_H)
+VIDEO_PATH = "input/demo.mp4"
 
-    frame_no = 0
+cap = cv2.VideoCapture(VIDEO_PATH)
 
-    while True:
+if not cap.isOpened():
+    raise Exception("Cannot open input/demo.mp4")
 
-        ret, frame = cap.read()
+# -------- Original video properties --------
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+fps = cap.get(cv2.CAP_PROP_FPS)
 
-        if not ret:
-            break
+print(f"Resolution : {width} x {height}")
+print(f"FPS        : {fps}")
 
-        frame_no += 1
+# -------- Output writer --------
+writer = cv2.VideoWriter(
+    "output/orbital_v2.mp4",
+    cv2.VideoWriter_fourcc(*"mp4v"),
+    fps,
+    (width, height)
+)
 
-        detections = detector.detect(frame)
+# -------- Full size window --------
+cv2.namedWindow("ORBITAL ARES", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("ORBITAL ARES", width, height)
 
-        for obj in detections:
+frame_count = 0
 
-            x1, y1, x2, y2 = obj["bbox"]
+# ==========================================================
+# MAIN LOOP
+# ==========================================================
+while True:
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
+    ret, frame = cap.read()
 
-            cv2.putText(
+    if not ret:
+        break
+
+    frame_count += 1
+
+    # Keep original resolution
+    frame = cv2.resize(frame, (width, height))
+
+    # ---------------- YOLO on GPU ----------------
+    result = model.predict(
+        source=frame,
+        device=DEVICE,
+        conf=0.45,
+        verbose=False
+    )[0]
+
+    # ---------------- Tracking ----------------
+    detections = tracker.update(result)
+
+    if len(detections) > 0:
+
+        for box, cls, track_id in zip(
+                detections.xyxy,
+                detections.class_id,
+                detections.tracker_id
+        ):
+
+            if cls not in VEHICLE_CLASSES:
+                continue
+
+            if track_id is None:
+                continue
+
+            x1, y1, x2, y2 = map(int, box)
+
+            label = f"{CLASS_NAMES[int(cls)]} #{int(track_id)}"
+
+            cv2.rectangle(
                 frame,
-                f'{obj["label"]} {obj["confidence"]}',
-                (x1, y1-10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0,255,0),
+                (x1, y1),
+                (x2, y2),
+                (0, 255, 0),
                 2
             )
 
-        cv2.putText(
-            frame,
-            f"Frame: {frame_no}",
-            (20,40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (255,255,255),
-            2
-        )
+            cv2.putText(
+                frame,
+                label,
+                (x1, y1 - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 0),
+                2
+            )
 
-        display = resize_keep_ratio(frame, WINDOW_W, WINDOW_H)
+    # ---------------- HUD ----------------
+    cv2.rectangle(frame, (10, 10), (270, 90), (25, 25, 25), -1)
 
-        cv2.imshow("ORBITAL ARES", display)
+    cv2.putText(
+        frame,
+        "ORBITAL ARES",
+        (20, 32),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 255),
+        2
+    )
 
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
+    cv2.putText(
+        frame,
+        f"GPU : {DEVICE.upper()}",
+        (20, 55),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        1
+    )
 
-    cap.release()
-    cv2.destroyAllWindows()
+    cv2.putText(
+        frame,
+        f"FRAME : {frame_count}",
+        (20, 76),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        1
+    )
 
-if __name__ == "__main__":
-    main()
+    # -------- Save + Display --------
+    writer.write(frame)
+    cv2.imshow("ORBITAL ARES", frame)
+
+    key = cv2.waitKey(1)
+
+    if key == 27:
+        break
+
+# ==========================================================
+# CLEANUP
+# ==========================================================
+cap.release()
+writer.release()
+cv2.destroyAllWindows()
+
+print("\nMission Complete")
+print("Saved -> output/orbital_v2.mp4")
