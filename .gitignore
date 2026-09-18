@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Model weights
+*.pt
+
+# Output videos
+output/
+
+# VS Code
+.vscode/
+
+.venv/
+__pycache__/
+*.pyc
+output/
+.vscode/
+
+# Ignore datasets
+input/
+*.mp4
+*.pt
